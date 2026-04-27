@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2024 Digi International Inc.
+ * Copyright (c) 2017-2023 Digi International Inc.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -71,9 +71,6 @@
 
 /* Client Secure Connection */
 #define CCIMP_CLIENT_CERTIFICATE_CAP_ENABLED
-
-/* Container support */
-#define CCIMP_CONTAINER_CAP_ENABLED
 
 /* SSL */
 #define APP_SSL
