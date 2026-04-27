@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 Digi International Inc.
+ * Copyright (c) 2022, 2023 Digi International Inc.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -22,9 +22,6 @@
 #include <malloc.h>
 #include <unistd.h>
 
-#include <regex.h>
-#include <libdigiapix/process.h>
-
 #include "cc_config.h"
 #include "cc_logging.h"
 #include "ccapi/ccapi.h"
@@ -33,11 +30,6 @@
 #include "_utils.h"
 
 #define TARGET_EDP_CERT_UPDATE	"builtin/edp_certificate_update"
-#define TARGET_CONTAINER	"builtin/container"
-
-#define CMD_LXC_LS		"lxc-ls -f %s"
-#define CMD_LXC_START		"lxc-start %s -- %s"
-#define CMD_LXC_STOP		"lxc-stop %s %s"
 
 #define DATA_REQUEST_TAG		"DREQ:"
 
@@ -80,12 +72,6 @@ typedef struct {
 	size_t size;
 	size_t max_size;
 } request_data_darray_t;
-
-typedef struct {
-	char *name;
-	char *action;
-	char *args;
-} json_data_t;
 
 static request_data_darray_t active_requests = { 0 };
 
@@ -670,137 +656,6 @@ static ccapi_receive_error_t edp_cert_update_cb(const char *const target,
 }
 #endif /* CCIMP_CLIENT_CERTIFICATE_CAP_ENABLED */
 
-#ifdef CCIMP_CONTAINER_CAP_ENABLED
-static ccapi_receive_error_t container_cb(const char *const target,
-			const ccapi_transport_t transport,
-			const ccapi_buffer_info_t *const request_buffer_info,
-			ccapi_buffer_info_t *const response_buffer_info)
-{
-	ccapi_receive_error_t ret = CCAPI_RECEIVE_ERROR_NONE;
-	char *response_msg = NULL;
-	char *request = request_buffer_info->buffer;
-	regex_t reg;
-	regmatch_t matches[5];
-	json_data_t data;
-	bool allocated_regex = false, allocated_response = false, allocated_data_name = false, allocated_data_action = false, allocated_data_args = false;
-	char pattern[] = "\\s*\\{\\s*\"name\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"action\"\\s*:\\s*\"([^\",]+)\"(\\s*,\\s*\"arguments\"\\s*:\\s*\"([^\"]+)\")?\\s*\\}\\s*";
-
-	log_dr_debug("%s: target='%s' - transport='%d'", __func__, target, transport);
-
-	if (regcomp(&reg, pattern, REG_EXTENDED) != 0) {
-		response_msg = "Regex compilation failed";
-		ret = CCAPI_RECEIVE_ERROR_INVALID_DATA_CB;
-		goto out;
-	}
-	allocated_regex = true;
-
-	if (request_buffer_info->length == 0) {
-		response_msg = "No args provided";
-		ret = CCAPI_RECEIVE_ERROR_INVALID_DATA_CB;
-		goto out;
-	}
-	request[request_buffer_info->length] = '\0';
-
-	if (regexec(&reg, request, 5, matches, 0) == 0) {
-		data.name = strndup(request + matches[1].rm_so, matches[1].rm_eo - matches[1].rm_so);
-		if (data.name == NULL) {
-			response_msg = "Out of memory";
-			ret = CCAPI_RECEIVE_ERROR_INSUFFICIENT_MEMORY;
-			goto out;
-		}
-		allocated_data_name = true;
-
-		data.action = strndup(request + matches[2].rm_so, matches[2].rm_eo - matches[2].rm_so);
-		if (data.action == NULL) {
-			response_msg = "Out of memory";
-			ret = CCAPI_RECEIVE_ERROR_INSUFFICIENT_MEMORY;
-			goto out;
-		}
-		allocated_data_action = true;
-
-		if (matches[3].rm_so != -1)
-			data.args = strndup(request + matches[4].rm_so, matches[4].rm_eo - matches[4].rm_so);
-		else if (strcmp(data.action, "start") == 0)
-			data.args = strdup("/sbin/init");
-		else
-			data.args = strdup("");
-		if (data.args == NULL) {
-			response_msg = "Out of memory";
-			ret = CCAPI_RECEIVE_ERROR_INSUFFICIENT_MEMORY;
-			goto out;
-		}
-		allocated_data_args = true;
-	} else {
-		response_msg = "Invalid JSON format";
-		ret = CCAPI_RECEIVE_ERROR_INVALID_DATA_CB;
-		goto out;
-	}
-
-	if (strcmp(data.action, "status") == 0 || strcmp(data.action, "start") == 0 || strcmp(data.action, "stop") == 0) {
-		char *cmd = NULL;
-		int cmd_len = 0;
-
-		if (strcmp(data.action, "status") == 0)
-			cmd_len = snprintf(NULL, 0, CMD_LXC_LS, data.name);
-		else if (strcmp(data.action, "start") == 0)
-			cmd_len = snprintf(NULL, 0, CMD_LXC_START, data.name, data.args);
-		else if (strcmp(data.action, "stop") == 0)
-			cmd_len = snprintf(NULL, 0, CMD_LXC_STOP, data.args, data.name);
-
-		cmd = calloc(cmd_len + 1, sizeof(char));
-		if (cmd == NULL) {
-			response_msg = "Out of memory on calloc call";
-			ret = CCAPI_RECEIVE_ERROR_INSUFFICIENT_MEMORY;
-			goto out;
-		}
-		if (strcmp(data.action, "status") == 0)
-			sprintf(cmd, CMD_LXC_LS, data.name);
-		else if (strcmp(data.action, "start") == 0)
-			sprintf(cmd, CMD_LXC_START, data.name, data.args);
-		else if (strcmp(data.action, "stop") == 0)
-			sprintf(cmd, CMD_LXC_STOP, data.args, data.name);
-
-		ldx_process_execute_cmd(cmd, &response_msg, 10);
-		if (response_msg && strlen(response_msg) > 0)
-			response_msg[strlen(response_msg) - 1] = '\0';  /* Remove the last line feed */
-
-		free(cmd);
-	} else {
-		response_msg = calloc(257, sizeof(char));
-		if (response_msg) {
-			allocated_response = true;
-			snprintf(response_msg, 256, "Container action %s no implemented", data.action);
-		} else {
-			response_msg = "Container action no implemented";
-		}
-		ret = CCAPI_RECEIVE_ERROR_INVALID_DATA_CB;
-	}
-
-out:
-	if (response_msg) {
-		size_t len = snprintf(NULL, 0, "%s", response_msg);
-		response_buffer_info->buffer = calloc(len + 1, sizeof(char));
-		if (response_buffer_info->buffer == NULL) {
-			log_dr_error("Could not set response: %s", "Out of memory");
-			ret = CCAPI_RECEIVE_ERROR_INSUFFICIENT_MEMORY;
-		} else {
-			response_buffer_info->length = sprintf(response_buffer_info->buffer, "%s", response_msg);
-		}
-	}
-	if (allocated_regex)
-		regfree(&reg);
-	if (allocated_response)
-		free(response_msg);
-	if (allocated_data_name)
-		free(data.name);
-	if (allocated_data_action)
-		free(data.action);
-	if (allocated_data_args)
-		free(data.args);
-	return ret;
-}
-#endif /* CCIMP_CONTAINER_CAP_ENABLED */
-
 static void builtin_request_status_cb(const char *const target,
 			const ccapi_transport_t transport,
 			ccapi_buffer_info_t *const response_buffer_info,
@@ -831,18 +686,6 @@ ccapi_receive_error_t register_builtin_requests(void)
 		return receive_error;
 	}
 #endif /* CCIMP_CLIENT_CERTIFICATE_CAP_ENABLED */
-
-#ifdef CCIMP_CONTAINER_CAP_ENABLED
-	receive_error = ccapi_receive_add_target(TARGET_CONTAINER,
-						 container_cb,
-						 builtin_request_status_cb,
-						 CCAPI_RECEIVE_NO_LIMIT);
-	if (receive_error != CCAPI_RECEIVE_ERROR_NONE) {
-		log_dr_error("Cannot register target '%s', error %d", TARGET_CONTAINER,
-				receive_error);
-		return receive_error;
-	}
-#endif /* CCIMP_CONTAINER_CAP_ENABLED */
 
 	return receive_error;
 }
