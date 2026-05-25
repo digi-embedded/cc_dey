@@ -91,7 +91,7 @@ static void handle_requests(int fd, const cc_cfg_t *const cc_cfg)
 			send_error(request_sock, "Failed to read request code: Out of memory");
 			log_error("Error reading request tag: %s", "Out of memory");
 		} else if (ret == -EPIPE) {
-			log_error("Error reading request tag: %s", "Socket closed");
+			log_debug("%s", "Peer closed service socket before sending request tag");
 		} else if (ret) {
 			send_error(request_sock, "Failed to read request code");
 			log_error("Error reading request tag: %s (%d)", strerror(errno), errno);
